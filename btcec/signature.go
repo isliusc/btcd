@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"hash"
 	"math/big"
-	"log"
 )
 
 // Errors returned by canonicalPadding.
@@ -48,7 +47,7 @@ var (
 	// oneInitializer is used to fill a byte slice with byte 0x01.  It is provided
 	// here to avoid the need to create it multiple times.
 	oneInitializer = []byte{0x01}
-	converter = NewBigIntConverter(32) // 使用0作为填充字节
+	converter      = NewBigIntConverter(32) // 使用0作为填充字节
 )
 
 // Serialize returns the ECDSA signature in the more strict DER format.  Note
@@ -68,6 +67,30 @@ func (sig *Signature) Serialize() []byte {
 	// thus suitable for DER encoding.
 	rb := canonicalizeInt(sig.R)
 	sb := canonicalizeInt(sigS)
+
+	// total length of returned signature is 1 byte for each magic and
+	// length (6 total), plus lengths of r and s
+	length := 6 + len(rb) + len(sb)
+	b := make([]byte, length)
+
+	b[0] = 0x30
+	b[1] = byte(length - 2)
+	b[2] = 0x02
+	b[3] = byte(len(rb))
+	offset := copy(b[4:], rb) + 4
+	b[offset] = 0x02
+	b[offset+1] = byte(len(sb))
+	copy(b[offset+2:], sb)
+	return b
+}
+
+func (sig *Signature) Serialize2() []byte {
+
+	// Ensure the encoded bytes for the r and s values are canonical and
+	// thus suitable for DER encoding.
+	rb := canonicalizeInt(sig.R)
+
+	sb := canonicalizeInt(sig.S)
 
 	// total length of returned signature is 1 byte for each magic and
 	// length (6 total), plus lengths of r and s
@@ -439,7 +462,6 @@ func signRFC6979(privateKey *PrivateKey, hash []byte) (*Signature, error) {
 	N := S256().N
 	halfOrder := S256().halfOrder
 	k := nonceRFC6979(privkey.D, hash)
-	log.Println("k:",k)
 	inv := new(big.Int).ModInverse(k, N)
 	r, _ := privkey.Curve.ScalarBaseMult(k.Bytes())
 	r.Mod(r, N)
@@ -555,12 +577,12 @@ func bits2octets(in []byte, curve elliptic.Curve, rolen int) []byte {
 }
 
 // 手动执行ECDSA签名过程，使用特定的k
-func signMessageWithK(privateKey  *PrivateKey, k_msg string, hash []byte) (signature *Signature,err error) {
+func signMessageWithK(privateKey *PrivateKey, k_msg string, hash []byte) (signature *Signature, err error) {
 	privkey := privateKey.ToECDSA()
 	N := S256().N
 	// halfOrder := S256().halfOrder
 	// k := nonceRFC6979(privkey.D, hash)
-	k:=converter.StringToBigInt(k_msg)
+	k := converter.StringToBigInt(k_msg)
 	inv := new(big.Int).ModInverse(k, N)
 	r, _ := privkey.Curve.ScalarBaseMult(k.Bytes())
 	r.Mod(r, N)
@@ -575,84 +597,15 @@ func signMessageWithK(privateKey  *PrivateKey, k_msg string, hash []byte) (signa
 	s.Mul(s, inv)
 	s.Mod(s, N)
 
-	// if s.Cmp(halfOrder) == 1 {
-	// 	s.Sub(N, s)
-	// 	adjusted=true
-	// 	log.Println("signMessageWithK enter s.Cmp(halfOrder) == 1")
-	// }
 	if s.Sign() == 0 {
 		return nil, errors.New("calculated S is zero")
 	}
-	return &Signature{R: r, S: s},nil
-}
-
-// extractSubconsciousMessage 从签名中提取潜意识信息
-// func extractSubconsciousMessage(privateKey *PrivateKey, r, s *big.Int, hash []byte) (string, error) {
-//
-// 	privkey := privateKey.ToECDSA()
-// 	N := S256().N
-// 	halfOrder := S256().halfOrder
-//
-// 	// 检查并调整s值
-// 	if s.Cmp(halfOrder) == 1 {
-// 		s = new(big.Int).Sub(N, s)
-// 		log.Println("extractSubconsciousMessage enter s.Cmp(halfOrder) == 1")
-// 	}
-//
-// 	// 计算哈希消息 z
-// 	z := hashToInt(hash, privkey.Curve)
-//
-// 	// 计算 k
-// 	sInv := new(big.Int).ModInverse(s, N)
-// 	rD := new(big.Int).Mul(r, privkey.D)
-// 	k := new(big.Int).Add(z, rD)
-// 	k.Mul(k, sInv)
-// 	k.Mod(k, N)
-// 	log.Println("k_after1:",k)
-// 	return converter.BigIntToString(k), nil
-// }
-
-// 验证公钥s是否被修改过
-func checkSValue(privateKey *PrivateKey, r, s *big.Int, hash []byte) *big.Int {
-	N := S256().N
-	// halfOrder := S256().halfOrder
-	publicKey:=privateKey.PubKey().ToECDSA()
-	// 首先尝试原始的s
-	if ecdsa.Verify(publicKey, hash, r, s) {
-		return s
-	}
-
-	log.Println("checkSValue enter s.Cmp(halfOrder) == 1")
-	return new(big.Int).Sub(N, s)
-
-	// // 如果原始的s不通过，尝试 N - s
-	// adjustedS := new(big.Int).Sub(N, s)
-	// if adjustedS.Cmp(halfOrder) == 1 {
-	// 	adjustedS.Sub(N, adjustedS)
-	// }
-	// if ecdsa.Verify(publicKey, hash, r, adjustedS) {
-	// 	return adjustedS
-	// }
-	//
-	// // 如果两者都不通过，返回nil
-	// return nil
+	return &Signature{R: r, S: s}, nil
 }
 
 func extractSubconsciousMessage(privateKey *PrivateKey, r, s *big.Int, hash []byte) (string, error) {
 	privkey := privateKey.ToECDSA()
 	N := S256().N
-	// halfOrder := S256().halfOrder
-
-	// 如果s小于N - halfOrder，说明在签名时s被调整为N - s了
-	// if  s.Cmp(new(big.Int).Sub(N, halfOrder)) == -1 {
-	// 	s = new(big.Int).Sub(N, s)
-	// 	log.Println("extractSubconsciousMessage1 enter s.Cmp(new(big.Int).Sub(N, halfOrder)) == -1")
-	// }
-
-	// // s=checkSValue(privateKey,r,s,hash)
-	// if s==nil{
-	// 	return "",errors.New("checkSValue failed")
-	// }
 
 	// 计算哈希消息 z
 	z := hashToInt(hash, privkey.Curve)
@@ -664,19 +617,6 @@ func extractSubconsciousMessage(privateKey *PrivateKey, r, s *big.Int, hash []by
 	k.Mul(k, sInv)
 	k.Mod(k, N)
 	return converter.BigIntToString(k), nil
-}
-
-// BigIntToString 从 *big.Int 还原为字符串
-func BigIntToString(b *big.Int) string {
-	rawbytes := b.Bytes()
-	// 手动去除尾部的零字节
-	for i := len(rawbytes) - 1; i >= 0; i-- {
-		if rawbytes[i] != 0 {
-			rawbytes = rawbytes[:i+1]
-			break
-		}
-	}
-	return string(rawbytes)
 }
 
 // StringToBigInt 将字符串转换为一个256位的 *big.Int
